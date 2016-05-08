@@ -8,17 +8,10 @@ RUN curl -O http://heanet.dl.sourceforge.net/project/docutils/docutils/0.12/docu
 RUN useradd git
 RUN mkdir /home/git
 RUN chown -R git:git /home/git
-RUN service postgresql start
-RUN sudo -u postgres -i psql -d postgres -c "CREATE USER git;"
-RUN sudo -u postgres -i psql -d postgres -c "CREATE DATABASE gitlabhq_production OWNER git;"
-RUN sudo -u postgres -i psql -d postgres -c "GRANT ALL PRIVILEGES ON  DATABASE gitlabhq_production to git;"
-RUN sudo -u postgres -i psql -d postgres -c "ALTER USER git CREATEDB;"
-RUN sudo -u postgres -i psql -d postgres -c "ALTER DATABASE gitlabhq_production owner to git;"
-RUN sudo -u postgres -i psql -d postgres -c "ALTER USER myuser WITH SUPERUSER;"
+RUN service postgresql start && sudo -u postgres -i psql -d postgres -c "CREATE USER git;" && sudo -u postgres -i psql -d postgres -c "CREATE DATABASE  gitlabhq_production OWNER git;" && sudo -u postgres -i psql -d postgres -c "GRANT ALL PRIVILEGES ON  DATABASE gitlabhq_production to git;" && sudo -u postgres -i psql -d postgres -c "ALTER USER git CREATEDB;" && sudo -u postgres -i psql -d postgres -c "ALTER DATABASE gitlabhq_production owner to git;" && sudo -u postgres -i psql -d postgres -c "ALTER USER git WITH SUPERUSER;"
 RUN cp /etc/redis/redis.conf /etc/redis/redis.conf.bak
 RUN sed 's/^port .*/port 0/' /etc/redis/redis.conf.bak | sed 's/# unixsocket/unixsocket/' | sed 's/unixsocketperm 700/unixsocketperm 777/' | tee /etc/redis/redis.conf
-RUN service redis-server start
-RUN sudo -u git -H git clone https://gitlab.com/gitlab-org/gitlab-ce.git -b 8-7-stable gitlab
+RUN cd /home/git && sudo -u git -H git clone https://gitlab.com/gitlab-org/gitlab-ce.git -b 8-7-stable gitlab
 RUN sudo -u git -H cp /home/git/gitlab/config/gitlab.yml.example /home/git/gitlab/config/gitlab.yml
 RUN sudo -u git -H cat /home/git/gitlab/config/gitlab.yml.example | sed 's/port: 80 /port: 8080 /' | tee /home/git/gitlab/config/gitlab.yml
 RUN mkdir /home/git/repositories
@@ -38,24 +31,28 @@ RUN sudo -u git -H cp /home/git/gitlab/config/unicorn.rb.example /home/git/gitla
 RUN sudo -u git -H cp /home/git/gitlab/config/initializers/rack_attack.rb.example /home/git/gitlab/config/initializers/rack_attack.rb
 RUN sudo -u git -H git config --global core.autocrlf input
 RUN sudo -u git -H git config --global gc.auto 0
-RUN sudo -u git -H cat /home/git/gitlab/config/resque.yml.example | sed 's/unix:\/var\/run\/redis\/redis.sock/unix:\/tmp\/redis.sock/' | tee /home/git/gitlab/config/resque.yml
-RUN sudo -u git -H cat /home/git/gitlab/config/database.yml.postgresql | head -n 8 | sed 's/pool: 10/pool: 10\n  template: template0/' | tee /home/git/gitlab/config/database.yml
-RUN sudo -u git -H chmod o-rwx /home/git/gitlab/config/database.yml
+RUN sudo -u git -H cat /home/git/gitlab/config/resque.yml.example | sed 's/unix:\/var\/run\/redis\/redis.sock/unix:\/tmp\/redis.sock/' | sudo -u git -H tee /home/git/gitlab/config/resque.yml
+RUN sudo -u git -H cat /home/git/gitlab/config/database.yml.postgresql | head -n 8 | sed 's/pool: 10/pool: 10\n  template: template0/' | sudo -u git -H tee /home/git/gitlab/config/database.yml
+RUN chmod o-rwx /home/git/gitlab/config/database.yml
 RUN mkdir /var/lib/gems
 RUN chown -R git:git /var/lib/gems/
 RUN gem install bundler --no-ri --no-rdoc
 RUN gem install therubyracer
 RUN gem install therubyrhino
-RUN cd /home/git/gitlab && sudo -u git -H bundle install --deployment --without development test mysql aws kerberos
-RUN cd /home/git/gitlab && sudo -u git -H bundle exec rake gitlab:shell:install[v2.7.2] REDIS_URL=unix:/tmp/redis.sock RAILS_ENV=production
+RUN service redis-server start && service postgresql start && cd /home/git/gitlab && sudo -u git -H bundle install --deployment --without development test mysql aws kerberos
+RUN service redis-server start && service postgresql start && cd /home/git/gitlab && sudo -u git -H bundle exec rake gitlab:shell:install[v2.7.2] REDIS_URL=unix:/tmp/redis.sock RAILS_ENV=production
 RUN cd /home/git && sudo -u git -H git clone https://gitlab.com/gitlab-org/gitlab-workhorse.git && cd gitlab-workhorse && git checkout branch-0.7.1 && make
 #possibly not needed, but let's be sure it works
-RUN sudo -u postgres -H psql -d gitlabhq_production -c "CREATE EXTENSION pg_trgm;"
-RUN cd /home/git/gitlab && sudo -u git -H bundle exec rake gitlab:setup RAILS_ENV=production
+RUN service postgresql start && sudo -u postgres -H psql -d gitlabhq_production -c "CREATE EXTENSION pg_trgm;"
 #silent setup, thanks to athiele (https://github.com/mattias-ohlsson/gitlab-installer/issues/31)
-RUN cd /home/git/gitlab && sudo -u git -H expect -c \"spawn bundle exec rake gitlab:setup RAILS_ENV=production; expect \\"Do you want to continue (yes/no)?\\"; send \\"yes\\";\"
+RUN service redis-server start && service postgresql start && cd /home/git/gitlab && sudo -u git -H bundle exec rake gitlab:setup RAILS_ENV=production force=yes
 RUN cp /home/git/gitlab/lib/support/init.d/gitlab /etc/init.d/gitlab
-RUN cd /home/git/gitlab && sudo -u git -H bundle exec rake gitlab:env:info RAILS_ENV=production
-RUN cd /home/git/gitlab && sudo -u git -H bundle exec rake assets:precompile RAILS_ENV=production
+RUN service redis-server start && service postgresql start && cd /home/git/gitlab && sudo -u git -H bundle exec rake gitlab:env:info RAILS_ENV=production
+RUN service redis-server start && service postgresql start && cd /home/git/gitlab && sudo -u git -H bundle exec rake assets:precompile RAILS_ENV=production
 RUN cat /home/git/gitlab/lib/support/nginx/gitlab | sed 's/server_name YOUR_SERVER_FQDN;/server_name $HOSTNAME;/' | tee /etc/nginx/sites-enabled/gitlab
 RUN rm -f /etc/nginx/sites-enabled/default
+CMD service redis-server start && service postgresql start && service nginx start && service gitlab start && tail -f /var/log/nginx/*.log
+EXPOSE 80
+VOLUME /home/git/repositories
+WORKDIR /home/git
+MAINTAINER docker@x2d2.de
